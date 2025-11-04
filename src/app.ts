@@ -13,7 +13,15 @@ const app: Express = express();
 // Apply global middleware
 app.use(compression());
 app.use(helmet({
-  contentSecurityPolicy: false // Disable CSP for proxy functionality
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            connectSrc: ["'self'", "*"], // Allow connections to any source for proxy
+            scriptSrc: ["'self'"],
+            styleSrc: ["'self'", "'unsafe-inline'"],
+            imgSrc: ["'self'", "data:", "https:"]
+        }
+    }
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
