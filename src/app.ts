@@ -1,85 +1,120 @@
-import express, { Express } from 'express';
+
+import express, { Express, RequestHandler } from 'express';
 import compression from 'compression';
-import helmet from 'helmet';
-import { SERVER, ROUTES } from './config/constants.js';
-import { corsMiddleware, errorHandler, requestLogger,  } from './middleware.js';
+import * as helmet from 'helmet';
+import { SERVER, ROUTES, PROXY } from './config/constants.js';
+import { corsMiddleware, errorHandler, requestLogger } from './middleware.js';
 import proxyRoutes from './proxy-routes.js';
+import workerPool, { getWorkerStats } from "./utils/worker-pool.js";
 
 /**
  * Create and configure the Express application
  */
 const app: Express = express();
 
-// Apply global middleware
-app.use(compression());
-app.use(helmet({
-    contentSecurityPolicy: {
-        directives: {
-            defaultSrc: ["'self'"],
-            connectSrc: ["'self'", "*"], // Allow connections to any source for proxy
-            scriptSrc: ["'self'"],
-            styleSrc: ["'self'", "'unsafe-inline'"],
-            imgSrc: ["'self'", "data:", "https:"]
-        }
-    }
+// Apply global middleware - FIX: Call compression as a function
+app.use(compression() as unknown as RequestHandler);
+app.use((helmet as any)({
+    contentSecurityPolicy: false
 }));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Move body parsers BEFORE custom middleware
+app.use(express.json({ limit: PROXY.MAX_REQUEST_SIZE }));
+app.use(express.urlencoded({ extended: true, limit: PROXY.MAX_REQUEST_SIZE }));
 
 // Apply custom middleware
 app.use(corsMiddleware);
 app.use(requestLogger);
 
+// Add custom middleware for URL length limits
+app.use((req, res, next) => {
+    const url = req.query.url as string;
+    if (url && url.length > 2048) {
+        return res.status(400).json({
+            error: {
+                code: 400,
+                message: 'URL too long'
+            },
+            success: false,
+            timestamp: new Date().toISOString()
+        });
+    }
+    next();
+});
 
 // Set up routes
 app.use(ROUTES.PROXY_BASE, proxyRoutes);
 
 // Root route
 app.get('/', (req, res) => {
-  res.json({
-    name: 'Shinra Proxy',
-    version: process.env.npm_package_version || '0.2.0',
-    description: 'A modular CORS proxy built with Express and TypeScript, supporting m3u8 and related formats',
-    usage: {
-      queryParam: `${ROUTES.PROXY_BASE}?url=https://example.com`,
-      pathParam: `${ROUTES.PROXY_BASE}/https://example.com`,
-      base64: `${ROUTES.PROXY_BASE}/base64/${Buffer.from('https://example.com').toString('base64')}`,
-    },
-    status: `${ROUTES.PROXY_BASE}/status`,
-  });
+    res.json({
+        name: 'Shinra Proxy',
+        version: process.env.npm_package_version || '0.2.0',
+        description: 'A modular CORS proxy built with Express and TypeScript, supporting m3u8 and related formats',
+        usage: {
+            queryParam: `${ROUTES.PROXY_BASE}?url=https://example.com`,
+            pathParam: `${ROUTES.PROXY_BASE}/https://example.com`,
+            base64: `${ROUTES.PROXY_BASE}/base64/${Buffer.from('https://example.com').toString('base64')}`,
+        },
+        status: `${ROUTES.PROXY_BASE}/status`,
+    });
 });
 
 // Status endpoint
 app.get(`${ROUTES.PROXY_BASE}/status`, (req, res) => {
-  const uptime = process.uptime();
-  const memory = process.memoryUsage();
-  
-  return res.json({
-    status: 'ok',
-    version: process.env.npm_package_version || '0.2.0',
-    uptime,
-    timestamp: new Date().toISOString(),
-    environment: SERVER.NODE_ENV,
-    memory: {
-      rss: Math.round(memory.rss / 1024 / 1024 * 100) / 100,
-      heapTotal: Math.round(memory.heapTotal / 1024 / 1024 * 100) / 100,
-      heapUsed: Math.round(memory.heapUsed / 1024 / 1024 * 100) / 100,
-      external: Math.round(memory.external / 1024 / 1024 * 100) / 100,
-    },
-  });
+    const uptime = process.uptime();
+    const memory = process.memoryUsage();
+
+    return res.json({
+        status: 'ok',
+        version: process.env.npm_package_version || '0.2.0',
+        uptime,
+        timestamp: new Date().toISOString(),
+        environment: SERVER.NODE_ENV,
+        memory: {
+            rss: Math.round(memory.rss / 1024 / 1024 * 100) / 100,
+            heapTotal: Math.round(memory.heapTotal / 1024 / 1024 * 100) / 100,
+            heapUsed: Math.round(memory.heapUsed / 1024 / 1024 * 100) / 100,
+            external: Math.round(memory.external / 1024 / 1024 * 100) / 100,
+        },
+    });
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    const health = {
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        version: process.env.npm_package_version
+    };
+
+    // Check critical services
+    const checks = {
+        cache: true, // You could check cache connectivity here
+        workers: workerPool ? getWorkerStats().threadsAvailable > 0 : true
+    };
+
+    const allHealthy = Object.values(checks).every(Boolean);
+    res.status(allHealthy ? 200 : 503).json({
+        ...health,
+        checks,
+        status: allHealthy ? 'ok' : 'degraded'
+    });
 });
 
 // 404 handler
 app.use((req, res) => {
-  res.status(404).json({
-    error: {
-      code: 404,
-      message: 'Not Found',
-      path: req.path,
-    },
-    success: false,
-    timestamp: new Date().toISOString(),
-  });
+    res.status(404).json({
+        error: {
+            code: 404,
+            message: 'Not Found',
+            path: req.path,
+        },
+        success: false,
+        timestamp: new Date().toISOString(),
+    });
 });
 
 // Global error handler
