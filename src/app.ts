@@ -1,7 +1,6 @@
 
 import express, { Express, RequestHandler } from 'express';
 import compression from 'compression';
-import * as helmet from 'helmet';
 import { SERVER, ROUTES, PROXY } from './config/constants.js';
 import { corsMiddleware, errorHandler, requestLogger } from './middleware.js';
 import proxyRoutes from './proxy-routes.js';
@@ -14,9 +13,6 @@ const app: Express = express();
 
 // Apply global middleware - FIX: Call compression as a function
 app.use(compression() as unknown as RequestHandler);
-app.use((helmet as any)({
-    contentSecurityPolicy: false
-}));
 
 // Move body parsers BEFORE custom middleware
 app.use(express.json({ limit: PROXY.MAX_REQUEST_SIZE }));
